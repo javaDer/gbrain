@@ -107,3 +107,116 @@ describe('redactConfigValue (v0.36.x #892 — set output regression)', () => {
       .toBe('voyage:voyage-3-large');
   });
 });
+
+// v0.36.1.x #1086: loadConfig translates legacy `provider` + `model` to the
+// canonical `embedding_model`. Without this, Voyage/Cohere/Mistral configs
+// silently fell through to OpenAI.
+describe('loadConfig — legacy provider+model migration (v0.36.1.x #1086)', () => {
+  test('translates {provider, model} to embedding_model', async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('fs');
+    const { join } = await import('path');
+    const { tmpdir } = await import('os');
+    const { withEnv } = await import('./helpers/with-env.ts');
+    const tmpHome = mkdtempSync(join(tmpdir(), 'gbrain-cfg-test-'));
+    try {
+      mkdirSync(join(tmpHome, '.gbrain'), { recursive: true });
+      writeFileSync(
+        join(tmpHome, '.gbrain', 'config.json'),
+        JSON.stringify({ engine: 'pglite', database_path: '/tmp/x', provider: 'voyage', model: 'voyage-4-large' }),
+      );
+      await withEnv({ GBRAIN_HOME: tmpHome }, async () => {
+        const { loadConfig } = await import('../src/core/config.ts');
+        const cfg = loadConfig();
+        expect(cfg).not.toBeNull();
+        expect(cfg!.embedding_model).toBe('voyage:voyage-4-large');
+        expect((cfg as unknown as Record<string, unknown>).provider).toBeUndefined();
+        expect((cfg as unknown as Record<string, unknown>).model).toBeUndefined();
+      });
+    } finally {
+      rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  test('canonical embedding_model wins over legacy provider+model when both present', async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('fs');
+    const { join } = await import('path');
+    const { tmpdir } = await import('os');
+    const { withEnv } = await import('./helpers/with-env.ts');
+    const tmpHome = mkdtempSync(join(tmpdir(), 'gbrain-cfg-test-'));
+    try {
+      mkdirSync(join(tmpHome, '.gbrain'), { recursive: true });
+      writeFileSync(
+        join(tmpHome, '.gbrain', 'config.json'),
+        JSON.stringify({
+          engine: 'pglite',
+          database_path: '/tmp/x',
+          embedding_model: 'openai:text-embedding-3-large',
+          provider: 'voyage',
+          model: 'voyage-4-large',
+        }),
+      );
+      await withEnv({ GBRAIN_HOME: tmpHome }, async () => {
+        const { loadConfig } = await import('../src/core/config.ts');
+        const cfg = loadConfig();
+        expect(cfg!.embedding_model).toBe('openai:text-embedding-3-large');
+      });
+    } finally {
+      rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
+  test('config without provider+model is untouched', async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('fs');
+    const { join } = await import('path');
+    const { tmpdir } = await import('os');
+    const { withEnv } = await import('./helpers/with-env.ts');
+    const tmpHome = mkdtempSync(join(tmpdir(), 'gbrain-cfg-test-'));
+    try {
+      mkdirSync(join(tmpHome, '.gbrain'), { recursive: true });
+      writeFileSync(
+        join(tmpHome, '.gbrain', 'config.json'),
+        JSON.stringify({ engine: 'pglite', database_path: '/tmp/x', embedding_model: 'voyage:voyage-3-large' }),
+      );
+      await withEnv({ GBRAIN_HOME: tmpHome }, async () => {
+        const { loadConfig } = await import('../src/core/config.ts');
+        const cfg = loadConfig();
+        expect(cfg!.embedding_model).toBe('voyage:voyage-3-large');
+      });
+    } finally {
+      rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+});
+
+// v0.36.1.x #1019 (cherry-pick #1083): configDir uses path.isAbsolute and
+// dual-separator '..' rejection so Windows paths are accepted.
+describe('configDir — GBRAIN_HOME Windows path acceptance (v0.36.1.x #1019)', () => {
+  test('relative paths are rejected with an absolute-path error', async () => {
+    const { withEnv } = await import('./helpers/with-env.ts');
+    await withEnv({ GBRAIN_HOME: 'relative/path' }, async () => {
+      const { configDir } = await import('../src/core/config.ts');
+      expect(() => configDir()).toThrow(/absolute/);
+    });
+  });
+
+  test("'..' segments rejected on POSIX-style absolute paths", async () => {
+    const { withEnv } = await import('./helpers/with-env.ts');
+    await withEnv({ GBRAIN_HOME: '/tmp/foo/../bar' }, async () => {
+      const { configDir } = await import('../src/core/config.ts');
+      expect(() => configDir()).toThrow(/'..' segments/);
+    });
+  });
+
+  test("'..' segments rejected via backslash separator (Windows path shape)", async () => {
+    // The dual-separator split is the regression we lock in. On a POSIX
+    // host, `path.isAbsolute('C:\\foo')` returns false (no drive letters),
+    // so we use a forward-slash-prefixed path that also contains a
+    // backslash '..' segment — that's the case where the pre-fix
+    // single-separator split would have let it through.
+    const { withEnv } = await import('./helpers/with-env.ts');
+    await withEnv({ GBRAIN_HOME: '/tmp/foo\\..\\bar' }, async () => {
+      const { configDir } = await import('../src/core/config.ts');
+      expect(() => configDir()).toThrow(/'..' segments/);
+    });
+  });
+});

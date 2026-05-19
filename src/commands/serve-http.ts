@@ -44,6 +44,44 @@ import { sqlQueryForEngine, executeRawJsonb } from '../core/sql-query.ts';
  */
 export const HEALTH_TIMEOUT_MS = 3000;
 
+/**
+ * v0.36.1.x #1024: bootstrap token resolution.
+ *
+ * Pure helper (no side effects, no process.exit) so the rule is unit-testable.
+ * Two outcomes:
+ *   - `ok`: caller proceeds with `{token, fromEnv}`. When the env value is
+ *     undefined, a fresh 32-byte hex token is generated.
+ *   - `error`: caller refuses to start. We require 32+ chars matching
+ *     `[A-Za-z0-9_-]+` for env-supplied tokens — fail-closed beats silently
+ *     accepting a weak admin secret.
+ *
+ * `randomBytesHex` is parameterized so tests can inject a deterministic
+ * fallback without monkey-patching `crypto.randomBytes`.
+ */
+export type BootstrapTokenResolution =
+  | { kind: 'ok'; token: string; fromEnv: boolean }
+  | { kind: 'error'; message: string };
+
+export function resolveBootstrapToken(
+  envValue: string | undefined,
+  randomBytesHex: () => string = () => randomBytes(32).toString('hex'),
+): BootstrapTokenResolution {
+  if (envValue === undefined) {
+    return { kind: 'ok', token: randomBytesHex(), fromEnv: false };
+  }
+  const trimmed = envValue.trim();
+  if (!/^[A-Za-z0-9_-]{32,}$/.test(trimmed)) {
+    return {
+      kind: 'error',
+      message:
+        'GBRAIN_ADMIN_BOOTSTRAP_TOKEN must be at least 32 chars and match [A-Za-z0-9_-]+.\n' +
+        '  Refusing to start with a weak admin bootstrap token. Generate one with:\n' +
+        '    head -c 32 /dev/urandom | base64 | tr -d "+/=" | head -c 48',
+    };
+  }
+  return { kind: 'ok', token: trimmed, fromEnv: true };
+}
+
 export type ProbeHealthResult =
   | { ok: true; status: 200; body: { status: 'ok'; version: string; engine: string; [k: string]: unknown } }
   | { ok: false; status: 503; body: { error: 'service_unavailable'; error_description: string } };
@@ -244,24 +282,13 @@ export async function runServeHttp(engine: BrainEngine, options: ServeHttpOption
   // — otherwise refuse to start. Logging the bootstrap-token value every
   // restart is the original gripe; with `GBRAIN_ADMIN_BOOTSTRAP_TOKEN` set
   // and `--suppress-bootstrap-token`, no value reaches the log.
-  const envBootstrap = process.env.GBRAIN_ADMIN_BOOTSTRAP_TOKEN;
-  let bootstrapToken: string;
-  let bootstrapFromEnv = false;
-  if (envBootstrap !== undefined) {
-    const trimmed = envBootstrap.trim();
-    if (!/^[A-Za-z0-9_-]{32,}$/.test(trimmed)) {
-      console.error(
-        'GBRAIN_ADMIN_BOOTSTRAP_TOKEN must be at least 32 chars and match [A-Za-z0-9_-]+.\n' +
-        '  Refusing to start with a weak admin bootstrap token. Generate one with:\n' +
-        '    head -c 32 /dev/urandom | base64 | tr -d "+/=" | head -c 48'
-      );
-      process.exit(1);
-    }
-    bootstrapToken = trimmed;
-    bootstrapFromEnv = true;
-  } else {
-    bootstrapToken = randomBytes(32).toString('hex');
+  const resolved = resolveBootstrapToken(process.env.GBRAIN_ADMIN_BOOTSTRAP_TOKEN);
+  if (resolved.kind === 'error') {
+    console.error(resolved.message);
+    process.exit(1);
   }
+  let bootstrapToken: string = resolved.token;
+  let bootstrapFromEnv: boolean = resolved.fromEnv;
   const bootstrapHash = createHash('sha256').update(bootstrapToken).digest('hex');
   const suppressBootstrapPrint = options.suppressBootstrapToken === true;
   const adminSessions = new Map<string, number>(); // sessionId → expiresAt
