@@ -4,6 +4,54 @@
 ## v0.37.5.0 NESTED_QUOTES validator follow-up
 
 - [ ] **v0.37.x+: unify `serializeFrontmatter` tag/title quoting with `brain-writer.ts:184`'s single-quote-with-`''`-escape style for consistency.** Cosmetic only now that the validator at `src/core/markdown.ts:219-238` is YAML-aware (v0.37.5.0). Today the emitter still produces `tags: ["yc"]` (double-quoted via `JSON.stringify`) while the repair path produces `tags: ['yc']` (single-quoted). Both are valid YAML and the validator accepts both, so this is cosmetic — but new writes drifting from repair-side output reads as inconsistency. Original signal: PR #1217 by @garrytan-agents (closed in favor of the validator fix). Touch `src/core/frontmatter-inference.ts:391-416` only; should be ~5 LOC + the existing test at `test/frontmatter-inference.test.ts:239` updated.
+## skill_brain_first wave follow-ups (v0.36.4+)
+
+- [ ] **v0.37+: Runtime brain-first gate at MCP dispatch.** The v0.36.x
+  `skill_brain_first` doctor check is purely static — it scans SKILL.md
+  authorship for canonical Convention callouts, `brain_first: exempt`
+  frontmatter, or position-relative brain references. The motivating
+  incident (2026-05-19 tweet-shield) was a RUNTIME failure: an agent
+  called Perplexity / cross-modal eval to assess Garry's Palantir tweet
+  without ever checking the brain, which already had "designed the
+  entire Finance product UI" and "150+ PSDs from April-December 2006."
+  A runtime gate would hook MCP tool dispatch: when a subagent invokes
+  `web_search` / `perplexity` / `exa` / etc., require that a `search`,
+  `query`, or `get_page` call landed earlier in the same agent turn.
+  Subagent-isolation aware (the gate scope is per-turn, per-agent).
+  Touches: `src/mcp/dispatch.ts` (tool-call entry seam, would gate before
+  routing to external-tool handlers), `src/core/minions/handlers/subagent.ts`
+  (per-turn tracking), `src/core/operations.ts` (cross-reference the
+  brain-tool ops). Full wave on its own (~3-5 days human / ~1-2h CC).
+  Out of scope for the static-check wave because the surface area is
+  fundamentally different. Closes the tweet-shield root cause at the
+  enforcement layer instead of just the authorship layer.
+
+- [ ] **v0.36.x: Audit trend doctor check `skill_brain_first_trend`.** The
+  v0.36.x snapshot+diff audit JSONL at
+  `~/.gbrain/audit/skill-brain-first-YYYY-Www.jsonl` records detected /
+  resolved / fixed events as transitions. The data is reachable via
+  `readRecentBrainFirstEvents(7)` in `src/core/audit-skill-brain-first.ts`
+  but no doctor surface consumes it yet. Add a `skill_brain_first_trend`
+  check (~30 LOC) that reads recent events, aggregates added vs resolved
+  counts per week, warns when violations are rising (e.g. >3 added, 0
+  resolved over 4 weeks). Cheap to land once audit logs accumulate
+  multiple weeks of data (no point shipping it with zero baseline data).
+  Mirrors the doctor check pattern in `src/commands/doctor.ts`. Filed
+  during /plan-eng-review as TODO-2.
+
+- [ ] **v0.36.x: Tighten the external-lookup regex to reduce false-positive
+  rate from name mentions.** v0.36.x ships with word-boundary regex on
+  `perplexity`, `exa`, `web_search`, etc. This matches "perplexity"
+  inside `perplexity-research` (a sub-skill name in dispatcher prose, not
+  an API call). Two skills in this repo's own `skills/` (functional-area-
+  resolver, strategic-reading) hit this false-positive and ship with
+  `brain_first: exempt`. Possible mitigation: tighten the pattern to
+  require an API-call shape like `perplexity\.|perplexity[\s._-]?(?:api|search|query)`.
+  Whack-a-mole risk — the negation-prose false-positive class can't be
+  reliably caught with regex either. Tracking as a follow-up; the
+  declarative `brain_first: exempt` opt-out is the canonical answer for
+  the false-positive cases. Decide based on real-world hit rate after
+  the v0.36.x wave is in production for a few weeks.
 
 
 ## v0.35.6.0 floor-ratio gate follow-ups (v0.36.x+)
