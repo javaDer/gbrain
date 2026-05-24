@@ -65,48 +65,67 @@ This is the difference between a search engine and a brain. Search finds the pag
 
 ## Install
 
-GBrain runs in three shapes. Pick the one that matches how you use AI agents today.
+GBrain is designed to be installed and operated by an AI agent. The fastest path is to have your agent do it for you. The CLI and MCP paths below are for people who want to wire it up themselves.
 
-### Run with your agent platform
+### Have your agent install it (recommended)
 
-Already using [OpenClaw](https://github.com/garrytan/openclaw) or [Hermes](https://github.com/garrytan/hermes)? GBrain installs as a skillpack scaffold into your agent's workspace.
+If you don't already have an AI agent platform running, start with one of these. Both are designed to read GBrain's install protocol and execute it:
 
-```bash
-gbrain init --pglite
-gbrain skillpack scaffold --all   # or: scaffold <name> per skill
+- **[OpenClaw](https://github.com/openclawagents/openclaw)** — deploy [AlphaClaw on Render](https://render.com/deploy?repo=https://github.com/chrysb/alphaclaw) (one click, 8GB+ RAM)
+- **[Hermes](https://github.com/openclawagents/hermes)** — deploy on [Railway](https://github.com/praveen-ks-2001/hermes-agent-template) (one click)
+
+Then paste this into your agent:
+
+```
+Retrieve and follow the instructions at:
+https://raw.githubusercontent.com/garrytan/gbrain/master/INSTALL_FOR_AGENTS.md
 ```
 
-That's it. Your agent picks up 43 skills (signal detection, brain-ops, ingest, enrich, citation-fixer, daily-task-manager, cron-scheduler, eval framework, and 35 more). Routing lives in `skills/RESOLVER.md` — the agent reads it once per request, picks the right skill, executes. Scaffolded skills are first-class members of your agent repo: you own them, edit freely; `gbrain skillpack reference <name>` diffs your copy against gbrain's bundle when you want to pull upstream improvements.
+The agent installs GBrain, creates the brain, asks for your API keys, loads 43 skills, configures the dream cycle, and verifies the install end-to-end. ~30 minutes. You answer questions, it does the work.
 
-### CLI standalone
+### Install it into your existing agent
 
-Use gbrain from any shell, no agent platform required.
+Already running Codex, Claude Code, Cursor, or another coding agent? Paste the same instruction in:
+
+```
+Retrieve and follow the instructions at:
+https://raw.githubusercontent.com/garrytan/gbrain/master/INSTALL_FOR_AGENTS.md
+```
+
+This works in any agent that can read files over HTTPS and execute shell commands. Tested with Codex, Claude Code, Claude Cowork, Cursor, and AlphaClaw.
+
+### CLI standalone (no agent)
 
 ```bash
 bun install -g github:garrytan/gbrain
-gbrain init --pglite   # 2 seconds; no server, no Docker
-gbrain doctor          # verify health
+gbrain init --pglite     # 2 seconds; no server, no Docker
+gbrain doctor            # verify health
+gbrain import ~/notes/   # index your markdown
+gbrain query "what themes show up across my notes?"
 ```
 
-Then point any MCP-aware client (Claude Code, Cursor, Windsurf) at it, or use it from your shell:
+Postgres-at-scale, Supabase, and thin-client setup paths live in [`docs/INSTALL.md`](docs/INSTALL.md).
+
+### Connect GBrain to your AI client (MCP)
+
+GBrain exposes 30+ tools over MCP (stdio and HTTP). The specific snippet depends on which client you use:
+
+- **[Claude Code](docs/mcp/CLAUDE_CODE.md)** — one command: `claude mcp add gbrain -- gbrain serve`. Zero server, zero tunnel.
+- **[Cursor / Windsurf / any stdio MCP client](docs/mcp/CLAUDE_CODE.md)** — same shape, add `{"command": "gbrain", "args": ["serve"]}` to your MCP config.
+- **[Claude Desktop (Cowork)](docs/mcp/CLAUDE_DESKTOP.md)** — Settings → Integrations → add the URL of your HTTP server. Remote only; the local `claude_desktop_config.json` does not work for remote servers.
+- **[Claude Cowork (team plan)](docs/mcp/CLAUDE_COWORK.md)** — org Owner adds the connector under Organization Settings → Connectors.
+- **[Perplexity Computer](docs/mcp/PERPLEXITY.md)** — Settings → Connectors → add the URL + bearer token. Pro subscription required.
+- **[ChatGPT](docs/mcp/CHATGPT.md)** — uses OAuth 2.1 with PKCE (the hard requirement). Register a `chatgpt` client from the admin dashboard with grant type `authorization_code`.
+
+For the HTTP server itself:
 
 ```bash
-gbrain search "who works at acme AI?"
-gbrain query "what did bob invest in this quarter?"
-gbrain graph-query people/garry-tan --depth 2
+gbrain serve              # stdio MCP (local subprocess; for Claude Code, Cursor, Windsurf)
+gbrain serve --http       # HTTP MCP with OAuth 2.1 + admin dashboard at /admin
+                          # (required for Claude Desktop, Cowork, Perplexity, ChatGPT)
 ```
 
-Detailed setup paths (Postgres at scale, Supabase, thin-client mode) live in [`docs/INSTALL.md`](docs/INSTALL.md).
-
-### MCP server (any MCP client)
-
-```bash
-gbrain serve              # stdio MCP (Claude Desktop / Code / Cursor)
-gbrain serve --http       # HTTP MCP with OAuth 2.1 + admin dashboard
-                          # at /admin, SSE activity feed at /admin/events
-```
-
-Per-client guides (Claude Desktop, Code, Cursor, ChatGPT, Perplexity, Cowork) live under [`docs/mcp/`](docs/mcp/). HTTP server supports DCR-style client registration, scope-gated access (`read`/`write`/`admin`), and built-in rate limiting.
+The HTTP server includes DCR-style client registration, scope-gated access (`read` / `write` / `admin`), and rate limiting. Deployment guides (ngrok, Railway, Fly.io) live under [`docs/mcp/`](docs/mcp/).
 
 ## Two ways to query your brain
 
