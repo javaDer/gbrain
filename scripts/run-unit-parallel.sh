@@ -58,7 +58,17 @@ N="${SHARDS_OVERRIDE:-${SHARDS:-$(detect_cpus)}}"
 if ! printf '%s' "$N" | grep -qE '^[0-9]+$' || [ "$N" -lt 1 ]; then
   echo "ERROR: invalid shard count: $N" >&2; exit 2
 fi
+# v0.40.10 flake-hardening: clamp default to 4 (was 8) to match CI's
+# test-shard.sh fan-out. At 8-shard parallel on Apple Silicon we observed
+# shard 5 SIGKILL during source-health.test.ts's PGLite migration replay —
+# 8 parallel PGLite WASM inits contend severely on the lockfile, and the
+# 92-migration replay × 8 simultaneous can wedge past even 900s. CI uses
+# 4 and is stable. Trade ~2x wallclock for reliability + parity with CI's
+# fan-out. Override via --shards N or SHARDS=N (still capped at 8).
 [ "$N" -gt 8 ] && N=8
+if [ -z "${SHARDS_OVERRIDE:-}" ] && [ -z "${SHARDS:-}" ] && [ "$N" -gt 4 ]; then
+  N=4
+fi
 
 INTRA_CONC="${MAX_CONCURRENCY_OVERRIDE:-${GBRAIN_TEST_MAX_CONCURRENCY:-4}}"
 # v0.40.10 flake-hardening: bump per-shard cap 600 → 900. The test suite
