@@ -869,7 +869,7 @@ export async function checkGradeConfidenceDrift(engine: BrainEngine): Promise<Ch
  *   100+ bounces + ZERO completed subagent jobs           → warn (paste-ready cap-raise hint)
  *   1000+ bounces                                        → fail ("blocking real work")
  *
- * Works on both Postgres + PGLite (migration v93 creates the table on both).
+ * Works on both Postgres + PGLite (migration v94 creates the table on both).
  * Pre-v93 brains (no table) silently skip with an OK message.
  */
 export async function checkSubagentHealth(engine: BrainEngine): Promise<Check> {

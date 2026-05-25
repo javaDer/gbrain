@@ -38,6 +38,58 @@
   CC ~3h. Tradeoff: large surface fan-out for marginal benefit on the
   CLI exit-on-timeout path. Only ship when a non-CLI consumer
   (HTTP MCP, future autopilot health checks) wants true cancellation.
+## v0.41.3 security/MCP fix wave follow-ups (filed during ship of `garrytan/security-mcp-fix-wave`)
+
+Source: codex outside-voice review on the v0.41.3 wave (D7) identified
+three real wins in PR #1316 (`chipoto69` — "Phase 4 multi-agent hardening")
+that did NOT land in v0.41.3. PR #1316 was bundled with RLS posture
+changes that conflict with v0.26.7's auto-RLS event trigger; the v0.41.3
+plan unbundled #1316 deliberately so its RLS posture rewrite gets its own
+architectural review. These three are the deferred standalone wins —
+each can ship as its own wave without touching RLS.
+
+- [ ] **T13a (P1) — Extract deny-by-default fine-grained scope wiring
+  from #1316.** Today the OAuth scope string (e.g. `read write`) is
+  validated at registration via `ALLOWED_SCOPES_LIST` but does NOT
+  constrain which MCP operations a token can call at dispatch time.
+  Every op currently runs if the bearer is valid. #1316 adds per-op
+  `requiredScope` metadata and a dispatch-time gate that returns 403
+  when the bearer's scope set doesn't satisfy the op's requirement.
+  Real security win: a `read`-scoped token can't call `put_page` or
+  `submit_job`. Requires per-op annotation review (which ops need
+  `write` vs `admin`) + scope-grammar decision (is `read` a strict
+  subset of `write`, or are they orthogonal categories?). NOT in
+  v0.41.3 because the per-op review is its own design exercise.
+  Cherry-pick starter: PR #1316 diff against `src/core/operations.ts`
+  and `src/mcp/dispatch.ts`. Effort: human ~2 days / CC ~3 hours.
+
+- [ ] **T13b (P2) — Extract real operation names in mcp_request_log
+  from #1316.** Pre-fix audit log records generic `tools/call` for
+  every MCP request. #1316 carries the real op name (`get_page`,
+  `put_page`, `submit_job`, etc.) into the `operation` column.
+  Standalone win — no architectural risk, no schema change (column
+  already exists), just dispatch-time wiring. Candidate for next
+  minor (v0.41.4 or v0.42.x). Cherry-pick starter: #1316 diff
+  against `src/mcp/dispatch.ts` audit-log insertion site.
+  Effort: human ~1h / CC ~10min.
+
+- [ ] **T13c (P2) — Extract `access_tokens.last_used_at` LRU debounce
+  from #1316.** Today `last_used_at` is updated on every bearer
+  request via the legacy transport's SQL-level WHERE-clause throttle
+  (60s minimum gap). On high-traffic deployments the hot-row writes
+  still hit Postgres for every request. #1316 adds an in-process LRU
+  cache so the SQL UPDATE only fires once per token per cooldown
+  window. Useful on multi-agent fleets sharing tokens at high rate;
+  no value for personal-laptop installs. NOT a blocker. Cherry-pick
+  starter: #1316's `src/core/token-last-used.ts` + the wiring in
+  `src/mcp/http-transport.ts:validateToken`. Effort: human ~2h /
+  CC ~20min.
+
+**NOT filed:** the RLS posture rewrite from #1316. That changes the
+v0.26.7 auto-RLS event trigger that `gbrain doctor`'s
+`rls_event_trigger` check treats as load-bearing; it deserves its own
+plan-eng-review + doctor-check rewrite + breaking-change CHANGELOG
+note. Filing it as a TODO would imply it's ready to pull; it isn't.
 
 ## v0.41.0.0 follow-ups (v0.41.1+)
 
@@ -51,7 +103,7 @@
   + `src/core/minions/handlers/subagent.ts:GBRAIN_ANTHROPIC_MAX_INFLIGHT`.
 
 - [ ] **v0.41+: `minion_lease_pressure_log` + budget/self-fix audit retention sweep.**
-  v0.41 migration v93 promoted `ON DELETE SET NULL` on audit FKs so rows
+  v0.41 migration v94 promoted `ON DELETE SET NULL` on audit FKs so rows
   survive `gbrain jobs prune`. Codex pass-3 #5 caught the corollary: without
   retention, audit tables grow unbounded. On a steady-pressure install
   (heavy daily batches), `minion_lease_pressure_log` is millions of rows by
@@ -92,6 +144,7 @@
   current behavior (truncate-then-fail) is safe — no infinite loops,
   depth-cap prevents chains — but full semantic reduction unlocks higher
   self-fix success rates on legitimately-long prompts.
+
 ## v0.41 content-sanity follow-ups (filed during ship of `garrytan/lint-page-size-gate`)
 
 Source: CEO + Eng review on the content-sanity defense plan. Both reviews

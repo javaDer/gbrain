@@ -2,7 +2,7 @@
 
 All notable changes to GBrain will be documented in this file.
 
-## [0.41.6.0] - 2026-05-24
+## [0.41.9.0] - 2026-05-25
 
 **Five UX/reliability fixes from a single production incident report. Your
 brain stops getting wedged for days when a CLI hangs, your sync stops
@@ -50,6 +50,209 @@ What you can now do:
 To take advantage of v0.41.6.0: just `gbrain upgrade` and re-run your
 flow. No manual migration needed. New `--break-lock` / `--force-break-lock`
 flags are documented in `gbrain sync --help`.
+## [0.41.3.0] - 2026-05-24
+
+**Pre-register Claude and ChatGPT clients without `--enable-dcr` — the SECURITY.md-recommended setup actually works now.**
+
+If you run `gbrain serve --http` to expose your brain over the network, the safe shape SECURITY.md recommends has always been "leave Dynamic Client Registration off, pre-register every browser-based client by hand." Before this release that path was broken at step one: `gbrain auth register-client` hard-coded no redirect URIs and no auth method, so claude.ai's first probe returned `Unregistered redirect_uri` and the only fix was hand-editing `oauth_clients` rows in psql. v0.41.3 makes the documented path actually usable.
+
+While the SECURITY.md-recommended pre-registration shape was being plumbed, an independent code review found that the live Express OAuth server (`/mcp`, `/token`, `/authorize`, `/register`, `/revoke`) was using default-wide-open `cors()` middleware — every web origin could complete a token exchange from a logged-in operator's browser. That's now closed by default; OAuth endpoints reject all cross-origin requests unless `GBRAIN_HTTP_CORS_ORIGIN` lists the origin explicitly.
+
+### How to use the new shape
+
+Pre-register a confidential client with one paste-ready command:
+
+```bash
+gbrain auth register-client claude-ai \
+  --scopes "read write" \
+  --redirect-uri https://claude.ai/api/mcp/auth_callback \
+  --redirect-uri https://claude.com/api/mcp/auth_callback
+# --grant-types auto-set to authorization_code,refresh_token because --redirect-uri was passed
+```
+
+Pre-register a public PKCE client (ChatGPT custom connector, Claude Code, Cursor) — no client secret minted:
+
+```bash
+gbrain auth register-client chatgpt \
+  --scopes "read write" \
+  --redirect-uri https://chatgpt.com/connector/oauth/<HASH> \
+  --token-endpoint-auth-method none
+```
+
+Then start the server with the CORS allowlist set:
+
+```bash
+GBRAIN_HTTP_CORS_ORIGIN=https://claude.ai gbrain serve --http --port 8787
+# Default reverse-proxy trust is "loopback" (Caddy/Tailscale on same host).
+# Behind Fly.io / Render / Vercel / nginx? Set GBRAIN_HTTP_TRUST_PROXY=1.
+GBRAIN_HTTP_TRUST_PROXY=1 gbrain serve --http --port 8787 --bind 0.0.0.0
+```
+
+### What you get
+
+| Surface | Before | After |
+|---|---|---|
+| `gbrain auth register-client` | hard-coded empty `redirect_uris`, NULL auth method, no public-client option | `--redirect-uri` (repeatable), `--token-endpoint-auth-method`, auto-set `authorization_code,refresh_token` when `--redirect-uri` is passed |
+| Express OAuth endpoints CORS | `cors()` default → `Access-Control-Allow-Origin: *` on /mcp, /token, /authorize, /register, /revoke | default-deny; allowlist via `GBRAIN_HTTP_CORS_ORIGIN`; startup WARN when `--bind 0.0.0.0` is set with no allowlist |
+| Legacy transport CORS preflight | leaked `Allow-Methods` + `Allow-Headers` to every Origin on OPTIONS regardless of allowlist | consolidated `corsHeaders(origin, {preflight})` — both Allow-Origin and Allow-Methods/Headers gated together |
+| Admin endpoint registering public client | INSERT confidential → UPDATE to NULL out `client_secret_hash` (non-atomic; UPDATE failure stranded a confidential row) | single atomic INSERT via `registerClientManual(..., tokenEndpointAuthMethod)` |
+| `token_endpoint_auth_method` validation | accepted any string at admin endpoint; CLI didn't even take the field | `ALLOWED_TOKEN_ENDPOINT_AUTH_METHODS = {client_secret_post, client_secret_basic, none}` enforced at all three registration entry points (CLI, admin, DCR) |
+| Reverse-proxy trust env | hardcoded `'loopback'` in Express; docs claimed "disabled by default" (lie) | `GBRAIN_HTTP_TRUST_PROXY` env: `'loopback'` default, `'1'` for one-hop proxies, `'0'` to disable, numeric for N hops, named modes pass through |
+
+### Things to watch after upgrade
+
+- If you ran with `gbrain serve --http` behind a reverse proxy and a browser-based client (claude.ai, ChatGPT) at the same domain, you'll now need to add that origin to `GBRAIN_HTTP_CORS_ORIGIN`. Same-origin requests (no Origin header) are unaffected.
+- If you had hand-edited `oauth_clients` rows to set `token_endpoint_auth_method = 'frobnicate'` or any other non-allowlist value, those rows continue to function — the validator only gates new writes. To clean up, re-register the client via the CLI (which now mints the right shape atomically).
+- If you set `GBRAIN_HTTP_TRUST_PROXY=1` previously on the legacy bearer transport, that env var now also drives the Express OAuth server. Same value, same semantics — but the doc disagreement is gone.
+
+### Itemized changes
+
+#### Added
+
+- `gbrain auth register-client --redirect-uri <uri>` (repeatable) — pre-register a client with one or more callback URLs. When passed without `--grant-types`, defaults to `authorization_code,refresh_token`.
+- `gbrain auth register-client --token-endpoint-auth-method <method>` — `client_secret_post` (default), `client_secret_basic`, or `none` (public PKCE-only client; no client secret minted).
+- `ALLOWED_TOKEN_ENDPOINT_AUTH_METHODS` constant + `validateTokenEndpointAuthMethod()` validator exported from `src/core/oauth-provider.ts`. Single source of truth gated at all three registration entry points (CLI, admin endpoint, DCR `/register`). Closes the `--enable-dcr` loose-path hole where DCR previously skipped allowlist validation.
+- `GBRAIN_HTTP_TRUST_PROXY` env var on the Express OAuth server (`src/commands/serve-http.ts`). Maps `'loopback'` (default), `'0'`/`'false'` (trust nothing), `'1'`/`'true'` (one hop), other numeric (N hops), other strings pass-through to Express named modes / CIDR lists. Pure `resolveTrustProxy()` helper exported for testability.
+- `parseCorsAllowlistOAuth()` + `resolveCorsOrigin()` helpers in `src/commands/serve-http.ts`. The cors middleware on OAuth endpoints now uses `cors({ origin: resolveCorsOrigin(allowlist) })` — default-deny when `GBRAIN_HTTP_CORS_ORIGIN` is unset, function-form check when set.
+- Startup stderr WARN when `--bind 0.0.0.0` is set without `GBRAIN_HTTP_CORS_ORIGIN`. Surfaces the default-deny posture before the first cross-origin request.
+- 48-case `test/serve-http-trust-proxy.test.ts` + `test/serve-http-cors.test.ts` + `test/auth-register-client-args.test.ts` (new) plus 18 new cases in `test/oauth.test.ts` and 4 new IRON RULE CORS preflight regressions in `test/http-transport.test.ts`. 183 directly-touched tests, all green.
+
+#### Changed
+
+- `registerClientManual()` signature extends with `tokenEndpointAuthMethod?: string` parameter. Return type widens from `{clientId, clientSecret}` to `{clientId, clientSecret?}` because public clients (`'none'`) don't mint a secret. Atomic single INSERT for the public-client case — no more INSERT-then-UPDATE race.
+- `corsHeaders()` and `corsPreflightHeaders()` in `src/mcp/http-transport.ts` consolidated into one `corsHeaders(origin, {preflight: boolean})`. Methods/Headers only emit when `preflight === true AND origin in allowlist`. Closes the asymmetry where the OPTIONS handler leaked surface to non-allowlisted origins.
+- Admin endpoint `POST /admin/api/register-client` validates `tokenEndpointAuthMethod` via shared validator before calling `registerClientManual`. The post-insert UPDATE block that NULL'd `client_secret_hash` for `'none'` clients is gone; the atomic INSERT does it directly.
+- CLI argv parser at `src/commands/auth.ts:registerClient` rewritten from `indexOf`-based lookahead to a proper loop. Pre-fix the parser only honored the FIRST occurrence of any flag, so `--redirect-uri A --redirect-uri B` silently dropped B.
+- `SECURITY.md` "If you must use a custom HTTP wrapper" section gains a "Pre-registering claude.ai / ChatGPT clients without DCR" subsection with paste-ready commands. "CORS" section documents the v0.41.3 OAuth endpoint lockdown. "Reverse-proxy trust" rewritten to match reality — was claiming "disabled by default" while Express hardcoded `'loopback'`; now documents the `GBRAIN_HTTP_TRUST_PROXY` env contract honestly.
+
+#### Fixed
+
+- Admin endpoint atomicity bug (codex F4): pre-v0.41.3 the registration handler did `INSERT (confidential) → UPDATE (NULL out secret_hash)` for `tokenEndpointAuthMethod === 'none'`. If the UPDATE failed mid-flight (timeout, network), a confidential row with a real client_secret stranded — the agent thought it was registering a public client, but operators ended up with a confidential one. Single atomic INSERT now.
+- DCR validator gate (codex F5): pre-v0.41.3 the `--enable-dcr` `/register` path defaulted unknown `token_endpoint_auth_method` values to `'client_secret_post'`, silently swallowing typos. The shared validator now fires on the DCR path too — closes the "DCR was the loosest entry point" hole.
+- `client_secret_basic` admitted in the allowed set (codex F3): server supports HTTP Basic confidential client auth at `/token` (`src/commands/serve-http.ts:468`) but a narrower allowlist would have rejected it. The allowlist is exactly `{client_secret_post, client_secret_basic, none}` — the three methods the SDK's `mcpAuthRouter` advertises.
+- Wide-open `cors()` on every OAuth endpoint (codex F1, the biggest finding): pre-v0.41.3 the live Express server at `src/commands/serve-http.ts:400-404` ran `app.use('/mcp', cors())` (and same for /token, /authorize, /register, /revoke) with no allowlist. `cors()` defaults to `Access-Control-Allow-Origin: *`. Any web origin could complete a full OAuth flow from a logged-in operator's browser. Closed by default; explicit allowlist required.
+- Reverse-proxy doc disagreement (codex F7): docs at `SECURITY.md:127` said "Disabled by default" while `src/commands/serve-http.ts:390` hardcoded `app.set('trust proxy', 'loopback')`. Docs now match implementation.
+
+### For contributors
+
+- Three new TODOS filed in `TODOS.md` under "v0.41.3 security/MCP fix wave follow-ups": T13a (extract deny-by-default fine-grained scope wiring from PR #1316), T13b (extract real operation names in mcp_request_log from #1316), T13c (extract `access_tokens.last_used_at` LRU debounce from #1316). PR #1316's RLS posture rewrite is deliberately not filed — it changes the v0.26.7 auto-RLS event trigger that `gbrain doctor`'s `rls_event_trigger` check treats as load-bearing and needs its own plan-eng-review.
+- Community PRs closed as superseded (work either already in master or covered by this wave): #685 (chipoto69), #876 (toilalesondev), #1076 (lukejduncan), #1077 (lukejduncan), #620 (ArshyaAI). Status comment left on open PR #1316 (chipoto69) pointing at the three TODOS.
+- 4 IRON RULE regression tests added at `test/http-transport.test.ts` pin the consolidated `corsHeaders` matrix (preflight × allowlisted/non-allowlisted) so the CORS asymmetry bug class can't return silently. The fix-wave-structural assertion was updated to assert the NEW atomic admin endpoint shape; a regression guard pins that the post-insert UPDATE pattern is gone.
+
+## To take advantage of v0.41.3.0
+
+`gbrain upgrade` should do this automatically. There is no schema migration in this release; the changes are all in code + docs.
+
+1. **Re-register browser-based clients with the new CLI flags:**
+   ```bash
+   gbrain auth register-client claude-ai \
+     --scopes "read write" \
+     --redirect-uri https://claude.ai/api/mcp/auth_callback \
+     --redirect-uri https://claude.com/api/mcp/auth_callback
+   ```
+   (You can leave existing manually-edited `oauth_clients` rows in place; the validator only gates new writes.)
+
+2. **Set `GBRAIN_HTTP_CORS_ORIGIN` if browser clients hit OAuth endpoints from a different origin.** Most setups (Claude Desktop, Cursor) don't need this; ChatGPT custom connector + claude.ai web flows do.
+
+3. **Verify the new posture:**
+   ```bash
+   curl -i -H "Origin: https://evil.example" -X OPTIONS http://localhost:8787/mcp
+   # Expected: NO Access-Control-Allow-Methods header (was leaking pre-v0.41.3)
+   curl -i -H "Origin: https://claude.ai" -X OPTIONS http://localhost:8787/mcp
+   # Expected: has Access-Control-Allow-Methods + Access-Control-Allow-Origin (when allowlisted)
+   ```
+
+4. **If something looks off,** please file an issue: https://github.com/garrytan/gbrain/issues with the output of `gbrain doctor` and which OAuth client + flow broke.
+
+## [0.41.2.0] - 2026-05-24
+
+**Your brain can now hold three lenses on the same data at once: creator, investor, engineer.** If you write content AND evaluate deals AND ship code, your old setup probably had three different agents pulling from three different mental models. This release ships four bundled "schema packs" that turn one brain into a multi-lens substrate: atoms + concepts join facts + takes as first-class units; gstack's typed learnings flow into the brain as first-class pages; the calibration profile that tracks how often you're wrong widens past its `{}` placeholder to score multiple domains side by side; and a one-shot migration importer lifts your OpenClaw's 13K atoms + 11K concepts into gbrain with permanent slug-keyed idempotency. Activate `gbrain-everything` and the dream cycle runs every pack-declared phase, the calibration profile produces all 7 domain scorecards in one query, and your gstack engineering learnings start appearing as queryable brain pages within seconds of being written.
+
+The lens packs are gbrain-creator (atoms + concepts), gbrain-investor (deal/thesis/bet_resolution_log + investor calibration domains), gbrain-engineer (a `learning` bridge for the gstack JSONL system), and gbrain-everything (a meta-pack that stacks all three via the v0.38 extends+borrow chain — no new active-multi-pack architecture needed, the registry walks the chain). Each pack declares the cycle phases it activates via a new `phases:` manifest field; the runCycle orchestrator gates pack-flavored phases on the active pack's declaration so a brain on gbrain-base stays unchanged byte-for-byte. The pre-existing 17 core phases (lint, sync, extract, extract_facts, propose_takes, grade_takes, calibration_profile, etc.) always run regardless of pack — `phases:` is additive, not subtractive.
+
+The codex outside-voice review caught four cross-model tensions during the eng review that reshaped the design: take→domain attribution moved from a scalar takes.domain column to a take_domain_assignments JOIN table (multi-domain takes attribute honestly to every applicable bucket); the markdown greenfield importer moved from trickle-mode IngestionSource to a new `mode: 'migration'` discriminator (permanent slug-keyed idempotency for bulk historical replay where retries happen days apart, not 24h windowed dedup); calibration domain shapes split into open names + closed aggregator algorithms (third-party packs can add domain labels without a gbrain release); and the meta-pack uses extends+borrow instead of a new multi-active-pack concept.
+
+The calibration profile aggregator (T10) ships four algorithms: scalar_brier (the default for probabilistic predictions), weighted_brier (Brier weighted by conviction so high-stakes misses cost more), count_based (accuracy without Brier), and cluster_summary (descriptive rollup with tier histogram for domains like concept_themes that have no binary outcome to score against).
+
+## To take advantage of v0.41.2.0
+
+`gbrain upgrade` handles the schema migration. After upgrade:
+
+```bash
+# 1. Pick your lens pack:
+gbrain config set schema_pack gbrain-creator     # if you primarily write content
+gbrain config set schema_pack gbrain-investor    # if you primarily evaluate deals
+gbrain config set schema_pack gbrain-engineer    # if you primarily ship code
+gbrain config set schema_pack gbrain-everything  # if you do all three (Garry pattern)
+
+# 2. Verify the pack loaded:
+gbrain doctor --json | jq '.checks[] | select(.name == "schema_packs")'
+
+# 3. Run the cycle once to exercise the new phases:
+gbrain dream   # no --phase flag; pack-declared phases run automatically
+
+# 4. See your new calibration domain scorecards:
+gbrain calibration --json | jq '.domain_scorecards | keys'
+# gbrain-everything user expects:
+# ["_overall", "deal_success", "founder_evaluation", "market_call",
+#  "concept_themes", "architecture_calls", "effort_estimates", "risk_assessment"]
+
+# 5. (Optional, OpenClaw users only) Migrate your existing brain:
+gbrain capture --source markdown-greenfield --repo ~/git/brain --dry-run --limit 100
+# Inspect ~/.gbrain/audit/markdown-greenfield-failures-YYYY-Www.jsonl
+# If clean, run for real (~30-60min for 24K pages):
+gbrain capture --source markdown-greenfield --repo ~/git/brain
+```
+
+After migrating, retire your OpenClaw's parallel atom-pipeline-coordinator + atom-backfill-coordinator crons; gbrain's autopilot already runs extract_atoms + synthesize_concepts inside every dream cycle when a creator-flavored pack is active. See `docs/migrations/v0.41.2-markdown-greenfield.md` for the full operator guide.
+
+### Itemized changes
+
+**Schema:**
+- Migration v93 — `take_domain_assignments(take_id, domain, pack, source, confidence, assigned_at)` JOIN table with composite PK + FK CASCADE + confidence CHECK in [0,1] + GIN index on (domain, take_id). PGLite + Postgres parity. RLS guard for BYPASSRLS roles matches takes/synthesis_evidence pattern. Backward-compat: pre-existing takes carry no assignments; aggregator LEFT JOIN skips them gracefully.
+
+**Schema-pack manifest extensions (v1):**
+- `phases?: string[]` optional field — phase participation declaration consumed by the runCycle orchestrator pack gate.
+- `calibration_domains?: [{name, aggregator, page_types}]` optional field — per-pack scorecard bucket declarations. Aggregator algorithms from the closed AGGREGATOR_KINDS enum (`scalar_brier`, `weighted_brier`, `count_based`, `cluster_summary`); domain names open (third-party packs can add new ones).
+
+**IngestionSource contract:**
+- `mode?: 'trickle' | 'migration'` discriminator on IngestionSource. Defaults to 'trickle' (v0.38 unchanged). `mode: 'migration'` bypasses the daemon's 24h DedupWindow; sources own permanent slug-keyed idempotency themselves.
+
+**Four bundled lens packs at `src/core/schema-pack/base/`:**
+- `gbrain-creator.yaml` — atom (NEW page type) + concept (reuse from base). Declares phases `[extract_atoms, synthesize_concepts]`. Calibration domain: concept_themes/cluster_summary/[concept].
+- `gbrain-investor.yaml` — thesis + bet_resolution_log (NEW). Borrows deal/person/company/yc. No new cycle phases. Calibration: deal_success/scalar_brier, founder_evaluation/scalar_brier, market_call/weighted_brier.
+- `gbrain-engineer.yaml` — learning (NEW). Borrows code+project. No new cycle phases (gstack-learnings IngestionSource is daemon-side). Calibration: architecture_calls/scalar_brier, effort_estimates/weighted_brier, risk_assessment/scalar_brier.
+- `gbrain-everything.yaml` — meta-pack extending gbrain-investor + borrowing atom from creator + learning from engineer. Explicitly re-declares phases + calibration_domains because `borrow_from` borrows types/link_types only, NOT phases.
+
+**Two new cycle phases (orchestrator-gated):**
+- `extract_atoms` (per-source) — Haiku extracts 1-3 atoms per transcript with the closed 11-value `atom_type` enum (insight, anecdote, quote, framework, statistic, story_angle, strategy_angle, strategy, endorsement, critique, collection). Writes `atoms/{YYYY-MM-DD}/{slug}` pages with frontmatter validators. Budget cap $0.30/source/run. Skips pages with `imported_from` marker.
+- `synthesize_concepts` (global) — Aggregates atoms by frontmatter `concepts:` ref. Tier by count: T1≥10, T2≥5, T3≥2. T1/T2 get Sonnet narratives; T3 falls back deterministic. Writes `concepts/{slug}` pages. Budget cap $1.50/run.
+
+**Calibration profile widening:**
+- `calibration_profiles.domain_scorecards` JSONB now populates per declared domain with `{n, brier, accuracy, aggregator, page_types, extras}` via the new `src/core/calibration/domain-aggregators.ts` module. R1 IRON RULE: byte-identical empty `{}` regression preserved when no active pack declares domains.
+
+**Two new IngestionSources:**
+- `markdown-greenfield` (mode: 'migration') — one-shot bulk importer at `src/core/ingestion/sources/markdown-greenfield.ts`. Walks `atoms/{YYYY-MM-DD}/`, `concepts/`, `ideas/`. Per-row validation failure → JSONL audit at `~/.gbrain/audit/markdown-greenfield-failures-YYYY-Www.jsonl`. Long-lived (`@one-shot` doc comment per D10).
+- `gstack-learnings` (mode: 'trickle') — daemon-side bridge at `src/core/ingestion/sources/gstack-learnings.ts`. Watches `~/.gstack/projects/{repo}/learnings.jsonl`, emits each line as a `learning`-typed IngestionEvent. Activates when engineer or gbrain-everything pack is active.
+
+**Three eval commands (scaffolds):**
+- `gbrain eval extract-atoms`, `gbrain eval synthesize-concepts`, `gbrain eval markdown-greenfield` — command surfaces ship; parity-baseline implementations against your OpenClaw's existing 13K atoms + 11K concepts on a 500-page sample subset land in v0.41.2.1.
+
+**Tests:** 16 new test files, 199 cases pinning the v0.41.2.0 contracts (R-MIG migration regression, R-GATE orchestrator pack gate, manifest schema shape, lens pack declarations, calibration aggregator math, ingestion mode discriminator, source emit pipelines).
+
+**Documentation:**
+- `docs/architecture/lens-packs.md` — full lens pack architecture, four-pack diagram, calibration widening explainer, v0.41.2.1 follow-ups.
+- `docs/migrations/v0.41.2-markdown-greenfield.md` — operator guide for the bulk migration: dry-run, audit JSONL inspection, retiring your OpenClaw's parallel crons.
+
+### v0.41.2.1 follow-ups (filed)
+
+- Per-page-type `frontmatter_validators` on PageTypeSchema (D11 — atom_type enum reads from manifest at runtime; currently hardcoded in extract_atoms.ts).
+- 3-check quality gate (truism / punchline / entity-page reject) as a multi-pass refinement for extract_atoms.
+- Embedding-similarity dedup for synthesize_concepts (currently exact-string concept ref match only).
+- Voice gate integration for T1 Canon narratives in synthesize_concepts.
+- op_checkpoint resumability for cross-cycle continuation in both new phases.
+- Parity-baseline eval gates against your OpenClaw outputs on 500-page sample.
+- OpenClaw-side cleanup (`atom-pipeline-coordinator` retire + SKILL.md shrinks) lives in `~/git/your-openclaw`, not this repo.
 ## [0.41.1.0] - 2026-05-24
 
 **Your CI can now fail a PR when search retrieval gets worse.** Before this release, gbrain shipped the pieces you'd need to measure retrieval quality (capture, replay, nightly probe, cross-modal runner) but nothing connected them into a loop. You could see a quality drop on your screen but nothing automatically caught it. v0.41 closes the loop end-to-end. You publish a baseline once — a snapshot of how your brain performs on a set of real queries — and then `gbrain eval gate` runs against that baseline on every PR. If results get materially worse OR if the brain stops finding pages it used to find, the command exits non-zero and CI turns red. The wave also wires the nightly quality probe into the autopilot daemon (opt-in via config) so a brain you've left running notices its own degradation.
@@ -166,7 +369,7 @@ What we caught and fixed before merging. Three independent reviews + three codex
 
 **Visibility infrastructure (Approach C base + Eng D3 / D7 / D8 / D10):**
 
-- New migration v93 `minions_v0_41_audit_and_budget`: three audit tables (`minion_lease_pressure_log`, `minion_budget_log`, `minion_self_fix_log`) with `ON DELETE SET NULL` FKs so audit rows survive `gbrain jobs prune`; denormalized columns (queue_name, model, provider, owner_id, event_type, etc.) persisted inline so post-NULL forensic queries still see context. Three new `minion_jobs` columns: `budget_remaining_cents`, `budget_owner_job_id` (FK SET NULL), `budget_root_owner_id` (no FK — Eng D10 immutable historical reference that survives owner deletion so children can disambiguate "never had a budget" from "owner deleted, halt cleanly"). Postgres + PGLite parity.
+- New migration v94 `minions_v0_41_audit_and_budget`: three audit tables (`minion_lease_pressure_log`, `minion_budget_log`, `minion_self_fix_log`) with `ON DELETE SET NULL` FKs so audit rows survive `gbrain jobs prune`; denormalized columns (queue_name, model, provider, owner_id, event_type, etc.) persisted inline so post-NULL forensic queries still see context. Three new `minion_jobs` columns: `budget_remaining_cents`, `budget_owner_job_id` (FK SET NULL), `budget_root_owner_id` (no FK — Eng D10 immutable historical reference that survives owner deletion so children can disambiguate "never had a budget" from "owner deleted, halt cleanly"). Postgres + PGLite parity.
 - `gbrain doctor` gains `subagent_health` check. Reads 24h of `minion_lease_pressure_log`. 0 bounces → ok; 100+ with no completed subagents → warn with paste-ready cap-raise hint; 1000+ → fail (blocking). Pre-v93 brains silently skip.
 - `gbrain jobs stats` gains a `Lease pressure (1h)` line + `--cluster-errors` flag that groups dead/failed jobs by classifier bucket via the new `src/core/minions/error-classify.ts` (the shared classifier consumed by both `gbrain jobs stats --cluster-errors` and the E6 self-fix gate).
 - New `src/core/minions/lease-pressure-audit.ts` + `src/core/minions/budget-tracker.ts` — best-effort writers + readers for the new audit tables. Stderr-warn on failure; never blocks the bypass path.
