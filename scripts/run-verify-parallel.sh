@@ -55,6 +55,7 @@ CHECKS=(
   "check:operations-filter-bypass"
   "check:gateway-routed"
   "check:resolver"
+  "check:source-scope-onboard"
   "typecheck"
 )
 

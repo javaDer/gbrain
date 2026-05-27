@@ -1,4 +1,8 @@
 // src/core/onboard/impact-capture.ts
+// sourcescope:file-brain-wide — captureMetric reports brain-wide
+// aggregates (orphan_count, stale_count, coverage fractions) by design.
+// Per A26 lint opt-out.
+//
 // v0.42.0.0 (A6 + A25 + A17, T11). Capture before/after stats per onboard
 // remediation step so `gbrain onboard --history` can show "you reduced
 // orphans 47% (88% → 41%)".

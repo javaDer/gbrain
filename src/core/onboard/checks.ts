@@ -1,4 +1,9 @@
 // src/core/onboard/checks.ts
+// sourcescope:file-brain-wide — every SQL site here is intentionally
+// brain-wide aggregate. The onboard checks REPORT across all sources
+// (orphan_count, stale_count, link_coverage, takes_count) so adding
+// source_id WHERE clauses would change the semantic. Per A26.
+//
 // v0.42.0.0 (A16, T4). Four new doctor checks consumed by both:
 //   - src/commands/doctor.ts runDoctor      (local surface)
 //   - src/core/doctor-remote.ts             (thin-client surface)
