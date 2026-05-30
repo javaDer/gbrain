@@ -1733,7 +1733,7 @@ export interface BrainEngine {
    * Source-scoped: pass scalar `sourceId` (single-source) OR `sourceIds`
    * (federated read) — array wins when both set, matching sourceScopeOpts.
    * Empty input → empty map (no query). Throws "relation page_aliases does
-   * not exist" on pre-v109 brains; the alias-hop caller wraps in try/catch
+   * not exist" on pre-v110 brains; the alias-hop caller wraps in try/catch
    * (isUndefinedColumnError) and degrades to no-injection (D9 fail-open).
    */
   resolveAliases(

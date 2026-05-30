@@ -712,7 +712,7 @@ export async function importFromContent(
 
   // T3 — project frontmatter `aliases:` into page_aliases (free-text alias
   // resolution for search). Runs AFTER the page write commits so the slug
-  // exists. Fail-soft: a pre-v109 brain has no page_aliases table yet (the
+  // exists. Fail-soft: a pre-v110 brain has no page_aliases table yet (the
   // migration may not have run); an alias-write failure must NOT fail the
   // import. Always called (even with []) so REMOVING an alias from frontmatter
   // clears its row — the content_hash includes non-timestamp frontmatter, so
