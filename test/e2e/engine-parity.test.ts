@@ -562,4 +562,52 @@ describeBoth('Engine parity — Postgres vs PGLite', () => {
     expect(tlDates(pg)).toEqual(['2026-01-05']);
     expect(tlDates(pl)).toEqual(tlDates(pg));
   });
+
+  // v0.42.x federated source isolation: getBacklinks / getTimeline / searchTakes
+  // gained sourceIds[] scoping so idea_lineage can serve federated remote
+  // callers without crossing source boundaries. The load-bearing assertion is
+  // EXCLUSION — a source-B row must NOT appear under a source-A scope — on the
+  // new `= ANY(${arr}::text[])` array path AND the scalar path, on both engines.
+  test('v0.42.x getBacklinks/getTimeline/searchTakes federated source isolation', async () => {
+    const SRCA = 'il-iso-a';
+    const SRCB = 'il-iso-b';
+    const ANCHOR = 'concepts/il-iso-anchor';
+    const srcSql = `INSERT INTO sources (id, name, config) VALUES ($1, $1, '{}'::jsonb) ON CONFLICT DO NOTHING`;
+    for (const eng of [pgEngine, pgliteEngine]) {
+      await eng.executeRaw(srcSql, [SRCA]);
+      await eng.executeRaw(srcSql, [SRCB]);
+      const aA = await eng.putPage(ANCHOR, { type: 'concept', title: 'Iso Anchor A', compiled_truth: 'iso anchor body', timeline: '' }, { sourceId: SRCA });
+      const aB = await eng.putPage(ANCHOR, { type: 'concept', title: 'Iso Anchor B', compiled_truth: 'iso anchor body', timeline: '' }, { sourceId: SRCB });
+      await eng.putPage('notes/il-iso-link-a', { type: 'note', title: 'link a', compiled_truth: 'x', timeline: '' }, { sourceId: SRCA });
+      await eng.putPage('notes/il-iso-link-b', { type: 'note', title: 'link b', compiled_truth: 'x', timeline: '' }, { sourceId: SRCB });
+      await eng.addLink('notes/il-iso-link-a', ANCHOR, 'm', 'mentions', 'markdown', undefined, undefined, { fromSourceId: SRCA, toSourceId: SRCA });
+      await eng.addLink('notes/il-iso-link-b', ANCHOR, 'm', 'mentions', 'markdown', undefined, undefined, { fromSourceId: SRCB, toSourceId: SRCB });
+      await eng.addTimelineEntry(ANCHOR, { date: '2026-03-01', source: '', summary: 'a', detail: '' }, { sourceId: SRCA });
+      await eng.addTimelineEntry(ANCHOR, { date: '2026-03-02', source: '', summary: 'b', detail: '' }, { sourceId: SRCB });
+      await eng.addTakesBatch([{ page_id: aA.id, row_num: 1, claim: 'iso anchor take alpha', kind: 'take', holder: 'h', weight: 0.8 }]);
+      await eng.addTakesBatch([{ page_id: aB.id, row_num: 1, claim: 'iso anchor take alpha', kind: 'take', holder: 'h', weight: 0.8 }]);
+    }
+
+    for (const eng of [pgEngine, pgliteEngine]) {
+      // Backlinks: scalar src-A excludes src-B; federated array unions.
+      const blA = (await eng.getBacklinks(ANCHOR, { sourceId: SRCA })).map(l => l.from_slug).sort();
+      expect(blA).toEqual(['notes/il-iso-link-a']);
+      const blFed = (await eng.getBacklinks(ANCHOR, { sourceIds: [SRCA, SRCB] })).map(l => l.from_slug).sort();
+      expect(blFed).toEqual(['notes/il-iso-link-a', 'notes/il-iso-link-b']);
+
+      // Timeline: scalar src-A excludes src-B's date; federated array unions.
+      // Engines differ on the DATE column wire shape (pg: string, pglite: Date).
+      const day = (d: unknown) => d instanceof Date ? d.toISOString().slice(0, 10) : String(d).slice(0, 10);
+      const tlA = (await eng.getTimeline(ANCHOR, { sourceId: SRCA })).map(t => day(t.date)).sort();
+      expect(tlA).toEqual(['2026-03-01']);
+      const tlFed = (await eng.getTimeline(ANCHOR, { sourceIds: [SRCA, SRCB] })).map(t => day(t.date)).sort();
+      expect(tlFed).toEqual(['2026-03-01', '2026-03-02']);
+
+      // Takes: scalar src-A returns 1; federated array returns both.
+      const tkA = await eng.searchTakes('iso anchor take alpha', { sourceId: SRCA });
+      expect(tkA.length).toBe(1);
+      const tkFed = await eng.searchTakes('iso anchor take alpha', { sourceIds: [SRCA, SRCB] });
+      expect(tkFed.length).toBe(2);
+    }
+  });
 });
