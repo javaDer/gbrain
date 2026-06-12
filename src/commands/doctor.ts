@@ -510,6 +510,33 @@ export async function doctorReportRemote(engine: BrainEngine): Promise<DoctorRep
     checks.push({ name: 'schema_version', status: 'warn', message: 'Could not check schema version' });
   }
 
+  // 2b. #2038: idx_timeline_dedup shape. A renumbered-during-merge migration
+  // (v102) can be recorded-as-applied without its DDL running, leaving the
+  // 3-column index in place — every timeline write then fails the 4-column
+  // ON CONFLICT. The version counter can't see this, so check the index SHAPE.
+  try {
+    const { checkTimelineDedupIndex } = await import('../core/timeline-dedup-repair.ts');
+    const idx = await checkTimelineDedupIndex(engine);
+    if (!idx.tablePresent || !idx.needsRepair) {
+      checks.push({
+        name: 'timeline_dedup_index',
+        status: 'ok',
+        message: idx.tablePresent ? 'idx_timeline_dedup has the 4-column shape' : 'no timeline_entries table yet',
+      });
+    } else {
+      checks.push({
+        name: 'timeline_dedup_index',
+        status: 'fail',
+        message:
+          `idx_timeline_dedup is ${idx.indexPresent ? `(${idx.columns.join(', ')})` : 'absent'}, ` +
+          `expected (page_id, date, summary, source) — timeline writes are failing (#2038). ` +
+          `Run \`gbrain apply-migrations --force-schema\` to heal it.`,
+      });
+    }
+  } catch {
+    checks.push({ name: 'timeline_dedup_index', status: 'warn', message: 'Could not check idx_timeline_dedup shape' });
+  }
+
   // 3. Brain score
   try {
     const health = await engine.getHealth();

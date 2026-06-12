@@ -5524,6 +5524,26 @@ export async function runMigrations(engine: BrainEngine): Promise<{ applied: num
   const sorted = [...MIGRATIONS].sort((a, b) => a.version - b.version);
 
   const pending = sorted.filter(m => m.version > current);
+
+  // #2038: schema-drift self-heal. A migration renumbered during a master
+  // merge (v102 timeline dedup, originally v99) can be recorded-as-applied
+  // without its DDL ever running — the version counter can't see it. Repair
+  // the known drift on EVERY pass, including when nothing is pending (the
+  // affected brains are stamped AHEAD of the missing migration, so they never
+  // reach the loop below). Best-effort + idempotent: a no-op on a healthy
+  // index; `doctor` surfaces it independently if this ever fails.
+  try {
+    const { repairTimelineDedupIndex } = await import('./timeline-dedup-repair.ts');
+    const r = await repairTimelineDedupIndex(engine);
+    if (r.repaired) {
+      console.error(
+        `[migrate] healed idx_timeline_dedup drift (#2038): ${r.before.join(',') || '(absent)'} ` +
+        `→ page_id,date,summary,source` +
+        (r.collapsedDuplicates > 0 ? ` (collapsed ${r.collapsedDuplicates} duplicate row(s))` : ''),
+      );
+    }
+  } catch { /* best-effort; doctor reports the drift if this couldn't run */ }
+
   if (pending.length === 0) {
     return { applied: 0, current };
   }
