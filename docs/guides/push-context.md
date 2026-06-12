@@ -1,4 +1,4 @@
-# Push-based context (#2095, v0.43)
+# Push-based context (#2095, v0.42.43.0)
 
 Retrieval used to be pull-only: the agent had to *know to ask* before the brain
 contributed anything. Push-based context inverts that — the brain volunteers
@@ -53,13 +53,19 @@ precision to tune `min_confidence`, not as an exact metric.
 | `retrieval_reflex` | true | the ambient channel's master switch |
 | `retrieval_reflex_max_pointers` | 3 | pointer cap per turn |
 
-Per-call knobs on the op/watch: `max_pages`, `min_confidence`, `session_id`,
-`turn` (attribution columns in the feedback log).
+Per-call knobs: `max_pages` + `min_confidence` on both the op and `gbrain watch`
+(`--max-pages` / `--min-confidence`, plus `--window-turns` / `--source` on watch);
+on the op only: `prior_context` (text whose already-surfaced slugs are suppressed),
+`session_id` / `turn` attribution params (watch stamps its own per-session id and
+turn numbers in the feedback log), and `days` to size the `--stats` window.
 
 ## Storage + privacy
 
 Volunteered pages log to `context_volunteer_events` (migration v117): slug,
 arm, confidence, channel, optional session/turn — the rationale is a
-deterministic template string, never raw conversation text. Rows are pruned
-after 90 days by the dream cycle's purge phase. Synopses pass through the same
-takes/facts-fence privacy boundary as `get_page`.
+deterministic template string, never raw conversation text. Event writes are
+best-effort (fire-and-forget, drained at CLI exit) — the log is a tuning signal,
+not an audit trail. Rows are pruned after 90 days by the dream cycle's purge
+phase. Synopses always strip the takes/facts fences — the same strip `get_page`
+applies to untrusted callers, applied unconditionally here so private fence rows
+never reach a prompt regardless of caller trust.
