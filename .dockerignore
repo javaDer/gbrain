@@ -4,9 +4,7 @@ node_modules
 bin/
 dist/
 .gbrain-evals/
-admin/
 docs/
-skills/
 test/
 evals/
 scripts/
