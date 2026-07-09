@@ -1,0 +1,59 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: gbrain
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gbrain}
+      POSTGRES_DB: gbrain
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  # MCP Server — 提供 HTTP MCP 访问（仅内网）
+  mcp:
+    image: ghcr.io/javader/gbrain:latest
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgres://gbrain:${POSTGRES_PASSWORD:-gbrain}@db:5432/gbrain
+      GBRAIN_HOME: /data
+      # API Keys（从 .env 文件注入）
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      ZEROENTROPY_API_KEY: ${ZEROENTROPY_API_KEY:-}
+    volumes:
+      - gbrain_data:/data
+      - ./docs:/docs:ro
+    ports:
+      # MCP HTTP 端口（默认 3131），只监听宿主机 localhost
+      # 如需局域网访问，改为 "3131:3131" 并配置防火墙
+      - "127.0.0.1:3131:3131"
+    command: serve --port 3131 --bind 0.0.0.0
+    restart: unless-stopped
+
+  # CLI — 一次性命令工具
+  cli:
+    image: ghcr.io/javader/gbrain:latest
+    profiles: ["cli"]
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgres://gbrain:${POSTGRES_PASSWORD:-gbrain}@db:5432/gbrain
+      GBRAIN_HOME: /data
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      ZEROENTROPY_API_KEY: ${ZEROENTROPY_API_KEY:-}
+    volumes:
+      - gbrain_data:/data
+      - ./docs:/docs:ro
+      - .:/workspace
+    working_dir: /workspace
+    command: --help
+
+volumes:
+  pgdata:
+  gbrain_data:
