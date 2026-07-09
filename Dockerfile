@@ -7,7 +7,9 @@ COPY bun.lock package.json ./
 RUN bun install --frozen-lockfile
 
 COPY . .
-RUN bun build --compile --target=bun-linux-x64 --outfile bin/gbrain src/cli.ts
+# 不指定 --target，让 bun 根据构建容器的 CPU 架构自动选择
+# linux/amd64 容器 → bun-linux-x64，linux/arm64 容器 → bun-linux-arm64
+RUN bun build --compile --outfile bin/gbrain src/cli.ts
 
 # Stage 2: Runtime
 FROM ubuntu:24.04
