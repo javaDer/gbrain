@@ -19,6 +19,8 @@ services:
     environment:
       DATABASE_URL: postgres://gbrain:${POSTGRES_PASSWORD:-gbrain}@db:5432/gbrain
       GBRAIN_HOME: /data
+      # MCP OAuth 2.1 认证 Token（32+ 字符，不设置则自动生成）
+      GBRAIN_ADMIN_BOOTSTRAP_TOKEN: ${GBRAIN_ADMIN_BOOTSTRAP_TOKEN:-}
       # API Keys（从 .env 文件注入）
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -28,9 +30,9 @@ services:
       - gbrain_data:/data
       - ./docs:/docs:ro
     ports:
-      # MCP HTTP 端口（默认 3131），只监听宿主机 localhost
-      # 如需局域网访问，改为 "3131:3131" 并配置防火墙
-      - "127.0.0.1:3131:3131"
+      # MCP HTTP 端口，对内网开放
+      # 如需限制仅宿主机访问，改为 "127.0.0.1:3131:3131"
+      - "3131:3131"
     command: serve --port 3131 --bind 0.0.0.0
     restart: unless-stopped
 
