@@ -9,13 +9,19 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gbrain -d gbrain"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
     restart: unless-stopped
 
   # MCP Server — 提供 HTTP MCP 访问（仅内网）
   mcp:
     image: ghcr.io/javader/gbrain:latest
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgres://gbrain:${POSTGRES_PASSWORD:-gbrain}@db:5432/gbrain
       GBRAIN_HOME: /data
@@ -41,7 +47,8 @@ services:
     image: ghcr.io/javader/gbrain:latest
     profiles: ["cli"]
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgres://gbrain:${POSTGRES_PASSWORD:-gbrain}@db:5432/gbrain
       GBRAIN_HOME: /data
