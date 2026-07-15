@@ -39,7 +39,7 @@ services:
       # MCP HTTP 端口，对内网开放
       # 如需限制仅宿主机访问，改为 "127.0.0.1:3131:3131"
       - "3131:3131"
-    command: serve --port 3131 --bind 0.0.0.0
+    command: serve --http --port 3131 --bind 0.0.0.0
     restart: unless-stopped
 
   # CLI — 一次性命令工具
