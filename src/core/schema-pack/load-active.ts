@@ -2,8 +2,8 @@
 //
 // Composes:
 //   1. Resolution chain (registry.resolveActivePackName) — 7 tiers per D13
-//   2. Pack manifest loading from disk:
-//      - Built-in 'gbrain-base' lives at src/core/schema-pack/base/gbrain-base.yaml
+//   2. Pack manifest loading:
+//      - Built-ins use source-tree YAML when present, then embedded text in compiled binaries
 //      - User packs live at ~/.gbrain/schema-packs/<name>/pack.yaml
 //      - Custom paths supported via `__setPackLocatorForTests` (test seam)
 //   3. `extends` chain resolution (registry.resolvePack)
@@ -27,7 +27,7 @@ import { fileURLToPath } from 'node:url';
 import type { GBrainConfig } from '../config.ts';
 import { gbrainPath } from '../config.ts';
 import type { SchemaPackManifest } from './manifest-v1.ts';
-import { loadPackFromFile } from './loader.ts';
+import { loadPackFromFile, loadPackFromString } from './loader.ts';
 import {
   resolveActivePackName,
   resolvePack,
@@ -37,7 +37,7 @@ import {
   type ResolutionInput,
   type ResolutionResult,
 } from './registry.ts';
-import { isBundledPackName } from './bundled.ts';
+import { getBundledPackSource, isBundledPackName } from './bundled.ts';
 
 /**
  * Inputs the caller (operations.ts handler / engine query path) provides.
@@ -94,8 +94,8 @@ export function _resetPackLocatorForTests(): void {
  */
 function defaultPackLocator(name: string): string | null {
   if (isBundledPackName(name)) {
-    // Resolve bundled YAML relative to this source file. Works in both
-    // direct-bun execution and bun --compile binaries.
+    // Resolve bundled YAML relative to this source file for direct Bun
+    // execution. Compiled binaries fall back to embedded text below.
     const here = dirname(fileURLToPath(import.meta.url));
     const bundledPath = join(here, 'base', `${name}.yaml`);
     if (existsSync(bundledPath)) return bundledPath;
@@ -117,19 +117,27 @@ function defaultPackLocator(name: string): string | null {
 
 /**
  * Load + parse + validate a pack by name. Used by `resolvePack` to walk
- * the extends chain. Throws UnknownPackError when the pack isn't on disk.
+ * the extends chain. Throws UnknownPackError when no disk or embedded
+ * representation exists.
  */
-async function loadPackManifestByName(name: string): Promise<SchemaPackManifest> {
+export function loadPackManifestByName(name: string): SchemaPackManifest {
   const path = _packLocator(name);
-  if (!path) {
-    throw new UnknownPackError(name);
+  if (path) return loadPackFromFile(path);
+
+  // `bun build --compile` produces a standalone executable; source-relative
+  // YAML paths do not exist beside that binary. Static text imports in
+  // bundled.ts keep the same manifests available without a source checkout.
+  const bundledSource = getBundledPackSource(name);
+  if (bundledSource !== null) {
+    return loadPackFromString(bundledSource, `bundled:${name}.yaml`);
   }
-  return loadPackFromFile(path);
+
+  throw new UnknownPackError(name);
 }
 
 /**
  * The boundary helper. Resolves the active pack identity, loads the
- * manifest from disk, walks the extends chain, builds the alias graph
+ * manifest from disk or embedded text, walks the extends chain, builds the alias graph
  * + closure hash, and returns the cached ResolvedPack.
  *
  * Throws:
@@ -146,10 +154,10 @@ export async function loadActivePack(input: LoadActivePackInput): Promise<Resolv
   // extends chain; cascade-invalidates and falls through on mtime change.
   const cached = tryCachedPack(resolution.pack_name);
   if (cached) return cached;
-  const manifest = await loadPackManifestByName(resolution.pack_name);
+  const manifest = loadPackManifestByName(resolution.pack_name);
   // Thread the locator so resolvePack can snapshot file paths + mtimes
   // for the stat-TTL gate on subsequent calls (codex C6 + D11 + D13).
-  return await resolvePack(manifest, loadPackManifestByName, {
+  return await resolvePack(manifest, async (name) => loadPackManifestByName(name), {
     loadByPath: (name) => _packLocator(name),
   });
 }
