@@ -4,7 +4,9 @@ FROM oven/bun:1.3.13 AS build
 WORKDIR /build
 
 COPY bun.lock package.json ./
-RUN bun install --frozen-lockfile
+# The root postinstall may depend on repository files that are copied in the
+# next layer, and its migration side effect is not needed while building an image.
+RUN bun install --frozen-lockfile --ignore-scripts
 
 COPY . .
 # 不指定 --target，让 bun 根据构建容器的 CPU 架构自动选择
