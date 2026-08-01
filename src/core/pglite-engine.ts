@@ -2407,7 +2407,7 @@ export class PGLiteEngine implements BrainEngine {
     }
 
     // CONSISTENCY: when chunk_text changes and no new embedding is supplied, BOTH embedding AND
-    // embedded_at must reset to NULL so `embed --stale` correctly picks up the row for re-embedding.
+    // embedded_at must reset to NULL so 'embed --stale' correctly picks up the row for re-embedding.
     // See postgres-engine.ts upsertChunks for the full rationale — pglite mirrors it for parity.
     //
     // v0.40.3.0 D24 NULL→non-NULL race fix mirrors postgres-engine.ts. Two writers
@@ -2901,9 +2901,11 @@ export class PGLiteEngine implements BrainEngine {
     // Remote MCP clients always land here.
     if (opts?.sourceIds && opts.sourceIds.length > 0) {
       const { rows } = await this.db.query(
-        `SELECT f.slug as from_slug, t.slug as to_slug,
+        `SELECT f.slug as from_slug, f.source_id as from_source_id,
+                t.slug as to_slug, t.source_id as to_source_id,
                 l.link_type, l.context, l.link_source,
-                o.slug as origin_slug, l.origin_field
+                o.slug as origin_slug, o.source_id as origin_source_id,
+                l.origin_field
          FROM links l
          JOIN pages f ON f.id = l.from_page_id
          JOIN pages t ON t.id = l.to_page_id
@@ -2919,9 +2921,11 @@ export class PGLiteEngine implements BrainEngine {
     // opts.sourceId, scope to that source (D20).
     if (opts?.sourceId) {
       const { rows } = await this.db.query(
-        `SELECT f.slug as from_slug, t.slug as to_slug,
+        `SELECT f.slug as from_slug, f.source_id as from_source_id,
+                t.slug as to_slug, t.source_id as to_source_id,
                 l.link_type, l.context, l.link_source,
-                o.slug as origin_slug, l.origin_field
+                o.slug as origin_slug, o.source_id as origin_source_id,
+                l.origin_field
          FROM links l
          JOIN pages f ON f.id = l.from_page_id
          JOIN pages t ON t.id = l.to_page_id
@@ -2932,9 +2936,11 @@ export class PGLiteEngine implements BrainEngine {
       return rows as unknown as Link[];
     }
     const { rows } = await this.db.query(
-      `SELECT f.slug as from_slug, t.slug as to_slug,
+      `SELECT f.slug as from_slug, f.source_id as from_source_id,
+              t.slug as to_slug, t.source_id as to_source_id,
               l.link_type, l.context, l.link_source,
-              o.slug as origin_slug, l.origin_field
+              o.slug as origin_slug, o.source_id as origin_source_id,
+              l.origin_field
        FROM links l
        JOIN pages f ON f.id = l.from_page_id
        JOIN pages t ON t.id = l.to_page_id
@@ -2951,9 +2957,11 @@ export class PGLiteEngine implements BrainEngine {
     // foreign referrer nor a foreign origin slug is disclosed to the caller.
     if (opts?.sourceIds && opts.sourceIds.length > 0) {
       const { rows } = await this.db.query(
-        `SELECT f.slug as from_slug, t.slug as to_slug,
+        `SELECT f.slug as from_slug, f.source_id as from_source_id,
+                t.slug as to_slug, t.source_id as to_source_id,
                 l.link_type, l.context, l.link_source,
-                o.slug as origin_slug, l.origin_field
+                o.slug as origin_slug, o.source_id as origin_source_id,
+                l.origin_field
          FROM links l
          JOIN pages f ON f.id = l.from_page_id
          JOIN pages t ON t.id = l.to_page_id
@@ -2966,9 +2974,11 @@ export class PGLiteEngine implements BrainEngine {
     // v0.31.8 (D16) + #2200: federated arm above is first; two below mirror getLinks.
     if (opts?.sourceId) {
       const { rows } = await this.db.query(
-        `SELECT f.slug as from_slug, t.slug as to_slug,
+        `SELECT f.slug as from_slug, f.source_id as from_source_id,
+                t.slug as to_slug, t.source_id as to_source_id,
                 l.link_type, l.context, l.link_source,
-                o.slug as origin_slug, l.origin_field
+                o.slug as origin_slug, o.source_id as origin_source_id,
+                l.origin_field
          FROM links l
          JOIN pages f ON f.id = l.from_page_id
          JOIN pages t ON t.id = l.to_page_id
@@ -2979,9 +2989,11 @@ export class PGLiteEngine implements BrainEngine {
       return rows as unknown as Link[];
     }
     const { rows } = await this.db.query(
-      `SELECT f.slug as from_slug, t.slug as to_slug,
+      `SELECT f.slug as from_slug, f.source_id as from_source_id,
+              t.slug as to_slug, t.source_id as to_source_id,
               l.link_type, l.context, l.link_source,
-              o.slug as origin_slug, l.origin_field
+              o.slug as origin_slug, o.source_id as origin_source_id,
+              l.origin_field
        FROM links l
        JOIN pages f ON f.id = l.from_page_id
        JOIN pages t ON t.id = l.to_page_id
@@ -4297,7 +4309,11 @@ export class PGLiteEngine implements BrainEngine {
                  $14, $15,
                  $16, $17, $18, $19,
                  $20
-               ) RETURNING id`
+               )
+               ON CONFLICT (source_id, source_markdown_slug, row_num)
+               WHERE row_num IS NOT NULL
+               DO NOTHING
+               RETURNING id`
             : `INSERT INTO facts (
                  source_id, entity_slug, fact, kind, visibility, notability, context,
                  valid_from, valid_until, source, source_session, confidence,
@@ -4311,12 +4327,16 @@ export class PGLiteEngine implements BrainEngine {
                  $15, $16,
                  $17, $18, $19, $20,
                  $21
-               ) RETURNING id`,
+               )
+               ON CONFLICT (source_id, source_markdown_slug, row_num)
+               WHERE row_num IS NOT NULL
+               DO NOTHING
+               RETURNING id`,
           embedStr === null
             ? [ctx.source_id, entitySlug, input.fact, kind, visibility, notability, context, validFrom, validUntil, input.source, sourceSession, confidence, embeddedAt, input.row_num, input.source_markdown_slug, claimMetric, claimValue, claimUnit, claimPeriod, eventType]
             : [ctx.source_id, entitySlug, input.fact, kind, visibility, notability, context, validFrom, validUntil, input.source, sourceSession, confidence, embedStr, embeddedAt, input.row_num, input.source_markdown_slug, claimMetric, claimValue, claimUnit, claimPeriod, eventType],
         );
-        out.push(ins.rows[0].id);
+        if (ins.rows[0]) out.push(ins.rows[0].id);
       }
       return out;
     });
@@ -5372,7 +5392,16 @@ export class PGLiteEngine implements BrainEngine {
         (SELECT count(*) FROM links l
          WHERE NOT EXISTS (SELECT 1 FROM pages p WHERE p.id = l.to_page_id)
         ) as dead_links,
-        (SELECT count(*) FROM content_chunks WHERE embedded_at IS NULL) as missing_embeddings,
+        -- Parity with postgres-engine.ts: same predicate as
+        -- buildStaleChunkWhere / countStaleChunks, i.e. what 'embed --stale'
+        -- actually processes. 'embedding IS NULL' (not embedded_at, which can
+        -- be non-NULL while embedding is NULL) and embed_skip excluded, so the
+        -- count can reach zero and the embed.stale remediation can converge.
+        (SELECT count(*) FROM content_chunks cc
+           JOIN pages p ON p.id = cc.page_id
+          WHERE cc.embedding IS NULL
+            AND NOT jsonb_exists(COALESCE(p.frontmatter, '{}'::jsonb), 'embed_skip')
+        ) as missing_embeddings,
         (SELECT count(*) FROM links) as link_count,
         (SELECT count(*) FROM entity_pages e
          WHERE EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = e.id))::float /
