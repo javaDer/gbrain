@@ -1,0 +1,15 @@
+.git
+.github
+.context
+.claude
+node_modules
+admin/node_modules
+tests
+test
+docs
+eval
+bin
+dist
+*.log
+docker-compose*.yml
+.env*
