@@ -1,5 +1,5 @@
 # Production image for the HTTP/MCP server.
-FROM oven/bun:1.3.13
+FROM oven/bun:1.4.2
 
 WORKDIR /app
 
@@ -12,7 +12,14 @@ COPY src ./src
 COPY admin/dist ./admin/dist
 COPY skills ./skills
 COPY recipes ./recipes
+COPY vendor ./vendor
+COPY native ./native
+COPY templates ./templates
 COPY VERSION ./VERSION
+
+# Verify the runtime and its platform-specific native addon before publishing.
+RUN bun run src/cli.ts --version \
+    && bun -e 'import postgres from "#postgres"; import { createRequire } from "node:module"; const require = createRequire(import.meta.url); require("./native/locks/prebuilds/linux-" + process.arch + "-glibc.node"); if (typeof postgres !== "function") throw new Error("Postgres module unavailable");'
 
 ENV NODE_ENV=production
 EXPOSE 8787
