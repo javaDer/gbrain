@@ -15,7 +15,7 @@ COPY recipes ./recipes
 COPY vendor ./vendor
 COPY native ./native
 COPY templates ./templates
-COPY VERSION ./VERSION
+COPY VERSION LICENSE ./
 
 # Verify the runtime and its platform-specific native addon before publishing.
 RUN bun run src/cli.ts --version \
