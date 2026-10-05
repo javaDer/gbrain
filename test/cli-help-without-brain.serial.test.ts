@@ -35,9 +35,22 @@ const HELP_WITHOUT_BRAIN = [
   'sources',
   // cathedral-6: agent answers --help (incl. `register --help`) engine-free.
   'agent',
-  // ZE interim cleanup: the retired ze-switch shim answers --help engine-free
-  // (truthful sunset copy + the canonical migration command).
-  'ze-switch',
+  // wave-2 repair core: runRepairCommand prints REPAIR_HELP before the engine.
+  'repair',
+  // System One: the decide dispatch module prints its help before connecting.
+  'decide',
+  // D3: handlers that print their own help, once shadowed by the generic stub
+  // (selfHelp flipped). Pre-connect records answer before any engine...
+  'remote', 'providers', 'resolvers', 'integrity', 'mounts', 'routing-eval', 'skillify', 'claw-test',
+  // ...conversation-parser through its engine-free subcommand route, the rest
+  // through SELF_HELP_WITHOUT_ENGINE's table entries.
+  'conversation-parser', 'advisor', 'anomalies', 'backfill', 'book-mirror', 'edges-backfill', 'features',
+  'founder', 'graph-query', 'orphans', 'salience', 'think',
+  // D5: selfHelp handlers that already answered --help before the engine but
+  // were reached only after connect; now SELF_HELP_WITHOUT_ENGINE table entries.
+  'brainstorm', 'lsd', 'migrate', 'pages', 'pricing', 'whoknows',
+  // Agent operator gate fixes: embed's usage (incl. its consent flags) prints before the engine.
+  'embed',
 ];
 
 /**
@@ -48,13 +61,7 @@ const HELP_WITHOUT_BRAIN = [
  * entry moves.
  */
 const STILL_NEEDS_A_BRAIN = [
-  'brainstorm',
   'config',
-  'embed',
-  'lsd',
-  'migrate',
-  'pages',
-  'retrieval-upgrade',
 ];
 
 async function runHelp(command: string): Promise<{ code: number; out: string }> {
@@ -102,6 +109,29 @@ describe('--help without a configured brain', () => {
     const code = await proc.exited;
     expect(code).toBe(0);
     expect(stdout + stderr).toContain('--preset daily-driver|coding-agent');
+  }, 30_000);
+
+  // System One: the eval-only judge harness is discoverable (and runnable) brainless.
+  test('decide judge-agreement --help answers with its usage', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'gbrain-nobrain-'));
+    const env: Record<string, string | undefined> = { ...process.env, GBRAIN_HOME: home };
+    delete env.GBRAIN_DATABASE_URL;
+    delete env.DATABASE_URL;
+    for (const args of [['decide', 'judge-agreement', '--help'], ['decide', 'judge-agreement']]) {
+      const proc = Bun.spawn(['bun', '--no-env-file', 'run', 'src/cli.ts', ...args], { cwd: REPO, env, stdout: 'pipe', stderr: 'pipe' });
+      const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+      await proc.exited;
+      expect(stdout + stderr).not.toContain('No brain configured');
+      expect(stdout + stderr).toContain('judge-agreement --suite <longmemeval|grounding> --input <file>');
+    }
+  }, 30_000);
+
+  // D5: retrieval-upgrade is an alias whose help is the `migrate embeddings` usage.
+  test('retrieval-upgrade --help answers with the migrate embeddings usage', async () => {
+    const { code, out } = await runHelp('retrieval-upgrade');
+    expect(code).toBe(0);
+    expect(out).not.toContain('No brain configured');
+    expect(out).toContain('Usage: gbrain migrate embeddings --to <provider:model>');
   }, 30_000);
 
   for (const command of HELP_WITHOUT_BRAIN) {

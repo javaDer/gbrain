@@ -1,7 +1,8 @@
 import type { PageReadScope, PageReadPolicy, AdjacencyRow, RelationalFanoutOpts, RelationalFanoutRow } from '../types.ts';
 import { unverifiedExtractionFragment } from '../extraction-review.ts';
-import { requiresSafeChunks, safeChunksFilter } from './safe-chunks.ts';
+import { currentTextProjectionFilter, requiresSafeChunks, safeChunksFilter } from './safe-chunks.ts';
 import { hasReadPolicy, pageReadFilter } from './read-policy-sql.ts';
+import { relationshipFilterSql } from '../link-validity.ts';
 
 /** Narrow query dependency shared by both engines. */
 export type ReadQuery = <T = Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<T[]>;
@@ -35,6 +36,7 @@ export async function readRelationalFanout(query: ReadQuery, seeds: string[], op
     typeFilter = `AND l.link_type = ANY($${params.length}::text[])`;
   }
   const mentionsFilter = opts?.includeMentions ? '' : `AND l.link_source IS DISTINCT FROM 'mentions'`;
+  const temporalFilter = opts?.temporal ? `AND ${relationshipFilterSql('l', { ...opts.temporal, excludePrivate: opts.excludePrivate })}` : '';
   const recurStep = direction === 'out'
     ? 'JOIN links l ON l.from_page_id = w.id JOIN pages p2 ON p2.id = l.to_page_id'
     : direction === 'in'
@@ -53,7 +55,7 @@ export async function readRelationalFanout(query: ReadQuery, seeds: string[], op
       FROM walk w ${recurStep}
       WHERE w.depth < $2 AND NOT (p2.id = ANY(w.visited))
         AND p2.source_id = w.seed_source AND p2.deleted_at IS NULL
-        AND ${step} AND ${origin} ${mentionsFilter} ${typeFilter}
+        AND ${step} AND ${origin} ${mentionsFilter} ${typeFilter} ${temporalFilter}
     )
     SELECT n.source_id, n.slug, MIN(n.depth) AS hop,
       COUNT(DISTINCT n.last_link_type) AS edge_count,
@@ -81,9 +83,14 @@ export async function readBacklinkCounts(query: ReadQuery, ids: number[], scope?
   const target = pageReadFilter('p', scope, params, !!scope);
   const contributor = pageReadFilter('contributor', scope, params, true);
   const origin = originFilter(scope, params);
+  // Distinct linking pages, not link rows: duplicate edges (several link
+  // types between one pair) and self-links would inflate the boost
+  // (adjacency's COUNT(DISTINCT) shape). A policy additionally requires live,
+  // authorized contributors; the trusted unscoped call counts every page.
   const rows = await query<{ page_id: number; cnt: number }>(`
-    SELECT p.id AS page_id, COUNT(l.id)::int AS cnt
+    SELECT p.id AS page_id, COUNT(DISTINCT l.from_page_id)::int AS cnt
     FROM pages p LEFT JOIN links l ON l.to_page_id = p.id
+      AND l.from_page_id <> p.id
       AND l.link_source IS DISTINCT FROM 'mentions'
       ${scope ? `AND EXISTS (SELECT 1 FROM pages contributor WHERE contributor.id = l.from_page_id AND ${contributor}) AND ${origin}` : ''}
     WHERE p.id = ANY($1::int[]) AND ${target} GROUP BY p.id`, params);
@@ -93,7 +100,15 @@ export async function readBacklinkCounts(query: ReadQuery, ids: number[], scope?
 
 export async function readAdjacencyBoosts(query: ReadQuery, ids: number[], scope?: PageReadScope): Promise<Map<number, AdjacencyRow>> {
   if (!ids.length) return new Map();
-  const params: unknown[] = [ids];
+  // The candidate ids are inlined (integers only), never a bound parameter: once a
+  // statement has run five times Postgres may reuse a generic plan, and without
+  // planner statistics (PGLite) the generic plan of this read walks pages against
+  // links (~7 s per search at 2k pages instead of ~45 ms).
+  const idArray = `ARRAY[${ids.map(id => {
+    if (!Number.isSafeInteger(id)) throw new TypeError(`readAdjacencyBoosts: page id ${String(id)} is not an integer`);
+    return id;
+  }).join(',')}]::int[]`;
+  const params: unknown[] = [];
   const from = pageReadFilter('p', scope, params, !!scope);
   const to = pageReadFilter('t', scope, params, !!scope);
   const origin = originFilter(scope, params);
@@ -102,7 +117,7 @@ export async function readAdjacencyBoosts(query: ReadQuery, ids: number[], scope
       COUNT(DISTINCT CASE WHEN p.source_id <> t.source_id THEN p.source_id END)::int AS cross_source_hits
     FROM links l JOIN pages p ON p.id = l.from_page_id AND p.deleted_at IS NULL
       JOIN pages t ON t.id = l.to_page_id AND t.deleted_at IS NULL
-    WHERE l.from_page_id = ANY($1::int[]) AND l.to_page_id = ANY($1::int[])
+    WHERE l.from_page_id = ANY(${idArray}) AND l.to_page_id = ANY(${idArray})
       AND ${from} AND ${to} AND ${origin}
     GROUP BY l.to_page_id HAVING COUNT(DISTINCT l.from_page_id) >= 1`, params);
   return new Map(rows.map(row => [Number(row.to_page_id), { hits: Number(row.hits), cross_source_hits: Number(row.cross_source_hits) }]));
@@ -165,11 +180,20 @@ export async function readAliases(query: ReadQuery, aliases: string[], scope?: P
   const out = new Map<string, PageRef[]>();
   if (!aliases.length) return out;
   const params: unknown[] = [aliases];
+  const aliasScope = pageReadFilter('m', scope && { sourceId: scope.sourceId, sourceIds: scope.sourceIds }, params);
   const filter = pageReadFilter('p', scope, params, true);
+  // Alias matches first, then one unique-key page lookup each (OFFSET 0 keeps the
+  // read filter out of that lookup): without planner statistics (PGLite has no
+  // autovacuum) the page_aliases -> sources foreign key otherwise makes the planner
+  // walk every readable page and probe aliases per page.
   const rows = await query<PageRef & { alias_norm: string }>(`
-    SELECT a.alias_norm, a.slug, a.source_id FROM page_aliases a
-    JOIN pages p ON p.source_id = a.source_id AND p.slug = a.slug
-    WHERE a.alias_norm = ANY($1::text[]) AND ${filter}
+    WITH a AS MATERIALIZED (
+      SELECT m.alias_norm, m.slug, m.source_id FROM page_aliases m
+      WHERE m.alias_norm = ANY($1::text[]) AND ${aliasScope}
+    )
+    SELECT a.alias_norm, a.slug, a.source_id FROM a
+    CROSS JOIN LATERAL (SELECT * FROM pages WHERE source_id = a.source_id AND slug = a.slug OFFSET 0) p
+    WHERE ${filter}
     ORDER BY a.alias_norm, a.source_id, a.slug`, params);
   for (const row of rows) {
     const refs = out.get(row.alias_norm) ?? [];
